@@ -1,53 +1,92 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::PathBuf;
-use std::process::{Command, Child};
-use std::sync::{Arc, RwLock};
-use std::thread;
-use std::time::Duration;
-use std::net::ToSocketAddrs;
+use std::{
+    fs, io,
+    io::BufRead,
+    path::PathBuf,
+    process::{Child, Command},
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+    time::Duration,
+};
 
-fn spawn_directoryd() -> Child {
-    Command::new("cargo")
+use coinswap::{
+    maker::error::MakerError,
+    market::rpc::{read_resp_message, RpcMsgReq, RpcMsgResp},
+    utill::send_message,
+};
+
+use tokio::{io::BufReader, net::TcpStream};
+
+fn spawn_directoryd_thread(log_sender: Sender<String>) -> Child {
+    let mut directoryd_process = Command::new("cargo")
         .args(["run", "--bin", "directoryd"])
+        .stdout(std::process::Stdio::piped())
         .spawn()
-        .expect("Failed to start directoryd process")
+        .expect("Failed to start directoryd process");
+
+    let stdout = directoryd_process.stdout.take().unwrap();
+    thread::spawn(move || {
+        let reader = io::BufReader::new(stdout);
+        for log_message in reader.lines().map_while(Result::ok) {
+            log_sender.send(log_message).unwrap();
+        }
+    });
+    directoryd_process
 }
 
-fn perform_dns_lookup(address: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let socket_addr = format!("{}:80", address).to_socket_addrs()?.next().ok_or("Failed to resolve address")?;
-    Ok(socket_addr.ip().to_string())
+async fn send_rpc_req(req: &RpcMsgReq) -> Result<Option<RpcMsgResp>, MakerError> {
+    let mut stream = TcpStream::connect("127.0.0.1:4321").await?;
+    let (read_half, mut write_half) = stream.split();
+
+    if let Err(e) = send_message(&mut write_half, &req).await {
+        log::error!("Error Sending RPC message : {:?}", e);
+    };
+
+    let resp = read_resp_message(&mut BufReader::new(read_half)).await?;
+    Ok(resp)
 }
 
-#[test]
-fn test_dns() {
+#[tokio::test]
+async fn test_dns() {
     let config_path = PathBuf::from("./.cargo/coinswap-test-data/directory/config.toml");
     fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     fs::write(
         &config_path,
         "\
         [directory_config]\n\
-        port = 8080\n\
+        port = 8084\n\
         socks_port = 19060\n\
         connection_type = tor\n\
         rpc_port = 4321\n\
         ",
     )
-        .unwrap();
+    .unwrap();
 
-    let mut directoryd_process = spawn_directoryd();
+    let (log_sender, log_receiver): (Sender<String>, Receiver<String>) = mpsc::channel();
 
-    thread::sleep(Duration::from_secs(2));
+    let mut directoryd_process = spawn_directoryd_thread(log_sender);
 
-    // Initialize the addresses HashSet with a test address
-    let addresses: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
-    addresses.write().unwrap().insert("example.com".to_string());
+    let mut server_started = false;
+    while let Ok(log_message) = log_receiver.recv_timeout(Duration::from_secs(5)) {
+        if log_message.contains("RPC socket binding successful") {
+            server_started = true;
+            break;
+        }
+    }
+    assert!(
+        server_started,
+        "Server did not start within the expected time"
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let address = addresses.read().unwrap().iter().next().cloned().unwrap();
-    let resolved_ip = perform_dns_lookup(&address).unwrap();
+    let resp = send_rpc_req(&RpcMsgReq::ListAddresses).await.unwrap();
 
-    // Assert that the resolved IP is valid
-    assert!(!resolved_ip.is_empty(), "Resolved IP should not be empty");
+    if let Some(RpcMsgResp::ListAddressesResp(addresses)) = resp {
+        assert!(addresses.is_empty(), "Expected an empty list of addresses");
+    } else {
+        panic!("Unexpected RPC response");
+    }
 
-    directoryd_process.kill().expect("Failed to kill directoryd process");
+    directoryd_process
+        .kill()
+        .expect("Failed to kill directoryd process");
 }
