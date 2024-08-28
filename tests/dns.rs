@@ -1,20 +1,18 @@
+use coinswap::{
+    maker::error::MakerError,
+    market::rpc::{RpcMsgReq, RpcMsgResp},
+    utill::{read_message, send_message},
+};
 use std::{
     fs, io,
     io::BufRead,
+    net::TcpStream,
     path::PathBuf,
     process::{Child, Command},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::Duration,
 };
-
-use coinswap::{
-    maker::error::MakerError,
-    market::rpc::{read_resp_message, RpcMsgReq, RpcMsgResp},
-    utill::send_message,
-};
-
-use tokio::{io::BufReader, net::TcpStream};
 
 fn spawn_directoryd_thread(log_sender: Sender<String>) -> Child {
     let mut directoryd_process = Command::new("cargo")
@@ -33,20 +31,20 @@ fn spawn_directoryd_thread(log_sender: Sender<String>) -> Child {
     directoryd_process
 }
 
-async fn send_rpc_req(req: &RpcMsgReq) -> Result<Option<RpcMsgResp>, MakerError> {
-    let mut stream = TcpStream::connect("127.0.0.1:4321").await?;
-    let (read_half, mut write_half) = stream.split();
+fn send_rpc_req(req: &RpcMsgReq) -> Result<Option<RpcMsgResp>, MakerError> {
+    let mut stream = TcpStream::connect("127.0.0.1:4321")?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(20)))?;
 
-    if let Err(e) = send_message(&mut write_half, &req).await {
-        log::error!("Error Sending RPC message : {:?}", e);
-    };
+    send_message(&mut stream, req)?;
 
-    let resp = read_resp_message(&mut BufReader::new(read_half)).await?;
-    Ok(resp)
+    let resp_bytes = read_message(&mut stream)?;
+    let resp: RpcMsgResp = serde_cbor::from_slice(&resp_bytes)?;
+    Ok(Some(resp))
 }
 
-#[tokio::test]
-async fn test_dns() {
+#[test]
+fn test_dns() {
     let config_path = PathBuf::from("./.cargo/coinswap-test-data/directory/config.toml");
     fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     fs::write(
@@ -76,9 +74,9 @@ async fn test_dns() {
         server_started,
         "Server did not start within the expected time"
     );
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    thread::sleep(Duration::from_secs(5));
 
-    let resp = send_rpc_req(&RpcMsgReq::ListAddresses).await.unwrap();
+    let resp = send_rpc_req(&RpcMsgReq::ListAddresses).unwrap();
 
     if let Some(RpcMsgResp::ListAddressesResp(addresses)) = resp {
         assert!(addresses.is_empty(), "Expected an empty list of addresses");
