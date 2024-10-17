@@ -1,41 +1,35 @@
-use std::{
-    path::PathBuf,
-    process::Command,
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
-    time::Duration,
-};
+use std::{io::Write, net::TcpStream, process::Command, thread, time::Duration};
 
 #[test]
 fn test_dns() {
-    let config_path = PathBuf::from("./.cargo/coinswap-test-data/directory/config.toml");
-
-    let (_log_sender, log_receiver): (Sender<String>, Receiver<String>) = mpsc::channel();
-
     let mut directoryd_process = Command::new("./target/debug/directoryd")
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
 
-    let mut server_started = false;
-    while let Ok(log_message) = log_receiver.recv_timeout(Duration::from_secs(5)) {
-        if log_message.contains("RPC socket binding successful") {
-            server_started = true;
-            break;
-        }
+    thread::sleep(Duration::from_secs(30));
+
+    let test_addresses = vec!["127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"];
+    for address in &test_addresses {
+        let mut stream = TcpStream::connect(("127.0.0.1", 4321)).unwrap();
+        let request = format!("POST {}\n", address);
+        stream.write_all(request.as_bytes()).unwrap();
     }
-    assert!(
-        server_started,
-        "Server did not start within the expected time"
-    );
-    thread::sleep(Duration::from_secs(5));
 
     let output = Command::new("./target/debug/directory-cli")
-        .args("ListAddresses")
+        .arg("ListAddresses")
         .output()
         .unwrap();
 
     let addresses: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
+
+    for address in test_addresses {
+        assert!(
+            addresses.contains(&address.to_string()),
+            "Address {} not found",
+            address
+        );
+    }
 
     directoryd_process
         .kill()
