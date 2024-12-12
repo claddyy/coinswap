@@ -101,6 +101,14 @@ impl Default for ThreadPool {
     }
 }
 
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        if let Err(e) = self.join_all() {
+            log::error!("Error joining threads in via drop: {:?}", e);
+        }
+    }
+}
+
 impl ThreadPool {
     pub fn new() -> Self {
         Self {
@@ -763,7 +771,6 @@ pub fn recover_from_swap(
             // For test, shutdown the maker at this stage.
             #[cfg(feature = "integration-test")]
             maker.shutdown.store(true, Relaxed);
-            maker.join_threads()?;
             return Ok(());
         }
         // Sleep before next blockchain scan
