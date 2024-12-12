@@ -103,7 +103,7 @@ impl Default for ThreadPool {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        if let Err(e) = self.join_all() {
+        if let Err(e) = self.join_all_threads() {
             log::error!("Error joining threads in via drop: {:?}", e);
         }
     }
@@ -121,7 +121,7 @@ impl ThreadPool {
         threads.push(handle);
     }
 
-    pub fn join_all(&self) -> Result<(), MakerError> {
+    fn join_all_threads(&self) -> Result<(), MakerError> {
         let mut threads = self
             .threads
             .lock()
