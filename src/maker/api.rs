@@ -92,7 +92,7 @@ pub struct ConnectionState {
 }
 
 pub struct ThreadPool {
-    pub threads: Mutex<Vec<JoinHandle<()>>>,
+    pub threads: Mutex<Vec<JoinHandle<Result<(), MakerError>>>>,
 }
 
 impl Default for ThreadPool {
@@ -116,7 +116,7 @@ impl ThreadPool {
         }
     }
 
-    pub fn add_thread(&self, handle: JoinHandle<()>) {
+    pub fn add_thread(&self, handle: JoinHandle<Result<(), MakerError>>) {
         let mut threads = self.threads.lock().unwrap();
         threads.push(handle);
     }
@@ -127,9 +127,7 @@ impl ThreadPool {
             .lock()
             .map_err(|_| MakerError::General("Failed to lock threads"))?;
         while let Some(thread) = threads.pop() {
-            thread
-                .join()
-                .map_err(|_| MakerError::General("Thread join failed"))?;
+            thread.join().unwrap()?;
         }
         Ok(())
     }
@@ -269,10 +267,6 @@ impl Maker {
             is_setup_complete: AtomicBool::new(false),
             thread_pool: Arc::new(ThreadPool::new()),
         })
-    }
-
-    pub fn join_threads(&self) -> Result<(), MakerError> {
-        self.thread_pool.join_all()
     }
 
     /// Returns a reference to the Maker's wallet.
@@ -517,7 +511,7 @@ pub fn check_for_broadcasted_contracts(maker: Arc<Maker>) -> Result<(), MakerErr
                             maker.config.port
                         );
                         let handle = std::thread::spawn(move || {
-                            recover_from_swap(maker_clone, outgoings, incomings).unwrap();
+                            recover_from_swap(maker_clone, outgoings, incomings)
                         });
                         maker.thread_pool.add_thread(handle);
                         // Clear the state value here
@@ -599,7 +593,7 @@ pub fn check_for_idle_states(maker: Arc<Maker>) -> Result<(), MakerError> {
                         maker.config.port
                     );
                     let handle = std::thread::spawn(move || {
-                        recover_from_swap(maker_clone, outgoings, incomings).unwrap();
+                        recover_from_swap(maker_clone, outgoings, incomings)
                     });
                     maker.thread_pool.add_thread(handle);
                     // Clear the state values here

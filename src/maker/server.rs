@@ -433,23 +433,19 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
     // Global server Mutex, to switch on/off p2p network.
     let accepting_clients = Arc::new(AtomicBool::new(false));
 
-    // Spawn Server threads.
-    // All thread handles are stored in the thread_pool, which are all joined at server shutdown.
-    let mut thread_pool = Vec::new();
-
     if !maker.shutdown.load(Relaxed) {
         // 1. Bitcoin Core Connection checker thread.
         // Ensures that Bitcoin Core connection is live.
         // If not, it will block p2p connections until Core works again.
         let maker_clone = maker.clone();
         let acc_client_clone = accepting_clients.clone();
-        let conn_check_thread: thread::JoinHandle<Result<(), MakerError>> = thread::Builder::new()
+        let conn_check_thread = thread::Builder::new()
             .name("Bitcoin Core Connection Checker Thread".to_string())
             .spawn(move || {
                 log::info!("[{}] Spawning Bitcoin Core connection checker thread", port);
                 check_connection_with_core(maker_clone, acc_client_clone)
             })?;
-        thread_pool.push(conn_check_thread);
+        maker.thread_pool.add_thread(conn_check_thread);
 
         // 2. Idle Client connection checker thread.
         // This threads check idelness of peer in live swaps.
@@ -464,7 +460,7 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
                 );
                 check_for_idle_states(maker_clone.clone())
             })?;
-        thread_pool.push(idle_conn_check_thread);
+        maker.thread_pool.add_thread(idle_conn_check_thread);
 
         // 3. Watchtower thread.
         // This thread checks for broadcasted contract transactions, which usually means violation of the protocol.
@@ -477,7 +473,7 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
                 log::info!("[{}] Spawning contract-watcher thread", port);
                 check_for_broadcasted_contracts(maker_clone.clone())
             })?;
-        thread_pool.push(contract_watcher_thread);
+        maker.thread_pool.add_thread(contract_watcher_thread);
 
         // 4: The RPC server thread.
         // User for responding back to `maker-cli` apps.
@@ -489,7 +485,7 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
                 start_rpc_server(maker_clone)
             })?;
 
-        thread_pool.push(rpc_thread);
+        maker.thread_pool.add_thread(rpc_thread);
 
         sleep(Duration::from_secs(heart_beat_interval)); // wait for 1 beat, to complete spawns of all the threads.
         maker.is_setup_complete.store(true, Relaxed);
@@ -516,18 +512,18 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
         match listener.accept() {
             Ok((mut stream, client_addr)) => {
                 log::info!("[{}] Spawning Client Handler thread", maker.config.port);
-
+                let maker_for_handler = maker.clone();
                 let client_handler_thread = thread::Builder::new()
                     .name("Client Handler Thread".to_string())
                     .spawn(move || {
-                        if let Err(e) = handle_client(maker, &mut stream, client_addr) {
+                        if let Err(e) = handle_client(maker_for_handler, &mut stream, client_addr) {
                             log::error!("[{}] Error Handling client request {:?}", port, e);
                             Err(e)
                         } else {
                             Ok(())
                         }
                     })?;
-                thread_pool.push(client_handler_thread);
+                maker.thread_pool.add_thread(client_handler_thread);
             }
 
             Err(e) => {
@@ -548,21 +544,6 @@ pub fn start_maker_server(maker: Arc<Maker>) -> Result<(), MakerError> {
     }
 
     log::info!("[{}] Maker is shutting down.", port);
-
-    // Shuting down. Join all the threads.
-    for thread in thread_pool {
-        log::info!(
-            "[{}] Closing Thread: {}",
-            port,
-            thread.thread().name().expect("Thread name expected")
-        );
-        let join_result = thread.join();
-        if let Ok(r) = join_result {
-            log::info!("[{}] Thread closing result: {:?}", port, r)
-        } else if let Err(e) = join_result {
-            log::info!("[{}] error in internal thread: {:?}", port, e);
-        }
-    }
 
     if maker.config.connection_type == ConnectionType::TOR && cfg!(feature = "tor") {
         crate::tor::kill_tor_handles(tor_thread.expect("Tor thread expected"));
