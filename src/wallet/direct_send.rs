@@ -16,7 +16,7 @@ use crate::wallet::api::UTXOSpendInfo;
 
 use super::{error::WalletError, Wallet};
 
-const P2PWPKH_WITNESS_SIZE: usize = 108;
+const P2PWPKH_WITNESS_SIZE: usize = 107;
 const P2WSH_MULTISIG_2OF2_WITNESS_SIZE: usize = 222;
 
 /// Represents options for specifying the amount to be sent in a transaction.
@@ -178,16 +178,6 @@ impl Wallet {
             }
         }
 
-        //Validate and set amounts
-        if let SendAmount::Amount(a) = send_amount {
-            if a + fee > total_input_value {
-                return Err(WalletError::InsufficientFund {
-                    available: total_input_value.to_btc(),
-                    required: (a + fee).to_btc(),
-                });
-            }
-        }
-
         let value = match send_amount {
             SendAmount::Max => total_input_value - fee,
             SendAmount::Amount(a) => a,
@@ -199,13 +189,29 @@ impl Wallet {
         // Only include change if remaining > dust
         if let SendAmount::Amount(amount) = send_amount {
             let internal_spk = self.get_next_internal_addresses(1)?[0].script_pubkey();
-            let remaining = total_input_value - amount - fee;
-            if remaining > internal_spk.minimal_non_dust() {
+            let minimal_nondust = internal_spk.minimal_non_dust();
+            let mut remaining = total_input_value - amount - fee;
+            if remaining > minimal_nondust {
                 log::info!("Adding Change {}: {}", internal_spk, remaining);
                 tx.output.push(TxOut {
                     script_pubkey: internal_spk,
                     value: remaining,
                 });
+
+                let base_wchange = tx.base_size();
+                let vsize_wchange = (base_wchange * 4 + total_witness_size) as f64 / 4.0;
+                let fee_wchange = Amount::from_sat((fee_rate * vsize_wchange).ceil() as u64);
+
+                remaining = total_input_value - amount - fee_wchange;
+
+                if remaining > minimal_nondust {
+                    tx.output[1].value = remaining;
+                }
+                log::info!(
+                    "Adding change output with {} sats (fee: {})",
+                    remaining,
+                    fee_wchange
+                );
             } else {
                 log::info!(
                     "Remaining change {} sats is below dust threshold. Skipping change output.",
@@ -218,6 +224,7 @@ impl Wallet {
             &mut tx,
             &mut coins_to_spend.iter().map(|(_, usi)| usi.clone()),
         )?;
+
         log::debug!("Signed Transaction : {:?}", tx.raw_hex());
         Ok(tx)
     }
