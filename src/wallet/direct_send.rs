@@ -165,7 +165,7 @@ impl Wallet {
         tx.output.push(txout);
 
         let base_size = tx.base_size();
-        let vsize = (base_size * 4 + total_witness_size) / 4;
+        let mut vsize = (base_size * 4 + total_witness_size) / 4;
         let fee = Amount::from_sat((fee_rate * vsize as f64).ceil() as u64);
         log::info!("Total Input Amount: {} | Fees: {}", total_input_value, fee);
 
@@ -199,8 +199,8 @@ impl Wallet {
                 });
 
                 let base_wchange = tx.base_size();
-                let vsize_wchange = (base_wchange * 4 + total_witness_size) as f64 / 4.0;
-                let fee_wchange = Amount::from_sat((fee_rate * vsize_wchange).ceil() as u64);
+                vsize = (base_wchange * 4 + total_witness_size) / 4;
+                let fee_wchange = Amount::from_sat((fee_rate * vsize as f64).ceil() as u64);
 
                 remaining = total_input_value - amount - fee_wchange;
 
@@ -224,6 +224,13 @@ impl Wallet {
             &mut tx,
             &mut coins_to_spend.iter().map(|(_, usi)| usi.clone()),
         )?;
+
+        let signed_tx_vsize = tx.vsize();
+        assert_eq!(
+            signed_tx_vsize, vsize,
+            "Calculated vsize {} didn't match signed tx vsize {}",
+            signed_tx_vsize, vsize
+        );
 
         log::debug!("Signed Transaction : {:?}", tx.raw_hex());
         Ok(tx)
