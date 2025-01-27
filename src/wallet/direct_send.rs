@@ -185,7 +185,7 @@ impl Wallet {
         tx.output.push(txout);
 
         let base_size = tx.base_size();
-        let mut vsize = (base_size * 4 + total_witness_size) / 4;
+        let vsize = (base_size * 4 + total_witness_size) / 4;
         let fee = Amount::from_sat((fee_rate * vsize as f64).ceil() as u64);
         log::info!("Total Input Amount: {} | Fees: {}", total_input_value, fee);
 
@@ -210,32 +210,34 @@ impl Wallet {
         if let SendAmount::Amount(amount) = send_amount {
             let internal_spk = self.get_next_internal_addresses(1)?[0].script_pubkey();
             let minimal_nondust = internal_spk.minimal_non_dust();
-            let mut remaining = total_input_value - amount - fee;
-            if remaining > minimal_nondust {
-                log::info!("Adding Change {}: {}", internal_spk, remaining);
+
+            let mut tx_wchange = tx.clone();
+            tx_wchange.output.push(TxOut {
+                value: Amount::ZERO, // Adjusted later
+                script_pubkey: internal_spk.clone(),
+            });
+
+            let base_wchange = tx_wchange.base_size();
+            let vsize_wchange = (base_wchange * 4 + total_witness_size) / 4;
+            let fee_wchange = Amount::from_sat((fee_rate * vsize_wchange as f64).ceil() as u64);
+
+            let remaining_wchange = total_input_value - amount - fee_wchange;
+
+            if remaining_wchange > minimal_nondust {
+                log::info!("Adding Change {}: {}", internal_spk, remaining_wchange);
                 tx.output.push(TxOut {
                     script_pubkey: internal_spk,
-                    value: remaining,
+                    value: remaining_wchange,
                 });
-
-                let base_wchange = tx.base_size();
-                vsize = (base_wchange * 4 + total_witness_size) / 4;
-                let fee_wchange = Amount::from_sat((fee_rate * vsize as f64).ceil() as u64);
-
-                remaining = total_input_value - amount - fee_wchange;
-
-                if remaining > minimal_nondust {
-                    tx.output[1].value = remaining;
-                }
                 log::info!(
                     "Adding change output with {} sats (fee: {})",
-                    remaining,
+                    remaining_wchange,
                     fee_wchange
                 );
             } else {
                 log::info!(
                     "Remaining change {} sats is below dust threshold. Skipping change output.",
-                    remaining
+                    remaining_wchange
                 );
             }
         }
