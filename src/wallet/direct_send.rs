@@ -84,12 +84,32 @@ impl Wallet {
     ///   value to the specified destination.
     /// - If [SendAmount::Amount] is used, a custom value is sent, and any remaining funds
     ///    are held in a change address, if applicable.
+    ///
     pub fn spend_from_wallet(
         &mut self,
         fee_rate: f64,
         send_amount: SendAmount,
         destination: Destination,
         coins_to_spend: &[(ListUnspentResultEntry, UTXOSpendInfo)],
+    ) -> Result<Transaction, WalletError> {
+        let coins = coins_to_spend
+            .iter()
+            .filter(|(_, info)| {
+                matches!(
+                    info,
+                    UTXOSpendInfo::SeedCoin { .. } | UTXOSpendInfo::SwapCoin { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        self.spend_coins(fee_rate, send_amount, destination, &coins)
+    }
+
+    pub fn spend_coins(
+        &mut self,
+        fee_rate: f64,
+        send_amount: SendAmount,
+        destination: Destination,
+        coins_to_spend: &Vec<&(ListUnspentResultEntry, UTXOSpendInfo)>,
     ) -> Result<Transaction, WalletError> {
         log::info!("Creating Direct-Spend from Wallet.");
 
