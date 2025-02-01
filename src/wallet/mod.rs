@@ -8,6 +8,7 @@ mod funding;
 mod rpc;
 mod storage;
 mod swapcoin;
+mod transaction;
 
 pub(crate) use api::{UTXOSpendInfo, Wallet};
 pub use direct_send::{Destination, SendAmount};
